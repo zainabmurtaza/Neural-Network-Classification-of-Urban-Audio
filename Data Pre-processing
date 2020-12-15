@@ -1,0 +1,13 @@
+parent_dir = 'UrbanSound8K/audio/'
+save_dir = "UrbanSound8K/processed/"
+sub_dirs = np.array(['fold1','fold2','fold3','fold4',
+                  'fold5','fold6','fold7','fold8',
+                  'fold9','fold10'])
+                  
+for sub_dir in sub_dirs:
+    features, labels = parse_audio_files(parent_dir,sub_dir)
+    np.savez("{0}{1}".format(save_dir, sub_dir), features=features,
+             labels=labels)
+#OPTIONAL
+
+glob.glob(os.path.join(parent_dir, 'fold1', '*.wav'))
