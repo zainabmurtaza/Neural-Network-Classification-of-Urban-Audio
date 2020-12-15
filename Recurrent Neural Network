@@ -1,0 +1,105 @@
+import glob
+import os
+import librosa
+import numpy as np
+from sklearn.model_selection import KFold
+from sklearn.metrics import accuracy_score
+
+import tensorflow as tf
+from tensorflow import keras
+
+def extract_features(parent_dir, sub_dirs, file_ext="*.wav", 
+                     bands=20, frames=41):
+    def _windows(data, window_size):
+        start = 0
+        while start < len(data):
+            yield start, start + window_size
+            start += (window_size // 2)    
+
+    window_size = 512 * (frames - 1)
+    features, labels = [], []
+    for fn in glob.glob(os.path.join(parent_dir, sub_dir, file_ext)):
+        segment_mfcc, segment_labels = [], []
+        sound_clip, sr = librosa.load(fn)
+        label = int(fn.split('/')[3].split('-')[1])
+        for (start,end) in _windows(sound_clip,window_size):
+            if(len(sound_clip[start:end]) == window_size):
+                signal = sound_clip[start:end]
+                mfcc = librosa.feature.mfcc(y=signal, sr=sr, 
+                        n_mfcc=bands).T.flatten()[:, np.newaxis].T
+                segment_mfcc.append(mfcc)
+                segment_labels.append(label)
+                
+        segment_mfcc = np.asarray(segment_mfcc).reshape(
+            len(segment_mfcc),frames,bands)
+        
+        if len(segment_mfcc) > 0: # check for empty segments 
+            features.append(segment_mfcc)
+            labels.append(segment_labels) 
+            
+    return features, labels
+    
+    parent_dir = 'UrbanSound8K/audio/'
+save_dir = "UrbanSound8K/processed/"
+folds = sub_dirs = np.array(['fold1','fold2','fold3','fold4',
+                  'fold5','fold6','fold7','fold8',
+                  'fold9','fold10'])
+for sub_dir in sub_dirs:
+    features, labels = extract_features(parent_dir,sub_dir)
+    np.savez("{0}{1}".format(save_dir, sub_dir), features=features, labels=labels)
+    
+    def get_network():
+    input_shape = (41, 20)
+    num_classes = 10
+    keras.backend.clear_session()
+    
+    model = keras.models.Sequential()
+    model.add(keras.layers.GRU(128, input_shape=input_shape))
+    model.add(keras.layers.Dense(128, activation="relu"))
+    model.add(keras.layers.Dense(num_classes, activation = "softmax"))
+    model.compile(optimizer=keras.optimizers.Adam(1e-4), 
+        loss=keras.losses.SparseCategoricalCrossentropy(), 
+        metrics=["accuracy"])
+    
+    return model
+    
+    accuracies = []
+folds = np.array(['fold1','fold2','fold3','fold4',
+                  'fold5','fold6','fold7','fold8',
+                  'fold9','fold10'])
+load_dir = "UrbanSound8K/processed/"
+kf = KFold(n_splits=10)
+for train_index, test_index in kf.split(folds):
+    x_train, y_train = [], []
+    for ind in train_index:
+        # Reading segments from an audio file:
+        train_data = np.load("{0}/{1}.npz".format(load_dir,folds[ind]), 
+                       allow_pickle=True)
+        # Amalagamating segments to be stacked for training, so that they are rendered as an instance:
+        features = np.concatenate(train_data["features"], axis=0) 
+        labels = np.concatenate(train_data["labels"], axis=0)
+        x_train.append(features)
+        y_train.append(labels)
+    # (x,y) pairs of all training folds are stacked:
+    x_train = np.concatenate(x_train, axis = 0).astype(np.float32)
+    y_train = np.concatenate(y_train, axis = 0).astype(np.float32)
+    
+    # Predictions on every segment are made for testing and are averaged to produce individual labels for audio clips. 
+    test_data = np.load("{0}/{1}.npz".format(load_dir,
+                   folds[test_index][0]), allow_pickle=True)
+    x_test = test_data["features"]
+    y_test = test_data["labels"]
+
+    model = get_network()
+    model.fit(x_train, y_train, epochs = 3, batch_size = 24, verbose = 0)
+    
+    # Using test folds for evaluation:
+    y_true, y_pred = [], []
+    for x, y in zip(x_test, y_test):
+        # # Using segments of sound clips to evaluate averaging predictions over:
+        avg_p = np.argmax(np.mean(model.predict(x), axis = 0))
+        y_pred.append(avg_p) 
+        # Using singular labels of sound clips with np.unique:
+        y_true.append(np.unique(y)[0]) 
+    accuracies.append(accuracy_score(y_true, y_pred))   
+print("Average 10 Folds Accuracy: {0}".format(np.mean(accuracies)))
